@@ -1,0 +1,213 @@
+name: "Drop-Drop Agent"
+description: "Monitor and control outbound network connections with egress filtering"
+author: "hanshal101"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  allowed-ips:
+    description: "List of IPs to allow outbound connections to. By default, only localhost and IPs required for the essential operations of Github Actions are allowed."
+    required: false
+    default: ""
+  allowed-domains:
+    description: "List of domains to allow outbound connections to. Wildcards are accepted. For example, if allowing `*.google.com`, this will allow `www.google.com`, `console.cloud.google.com` but not `google.com`. By default, only domains required for essential operations of Github Actions and uploading job summaries are allowed."
+    required: false
+    default: ""
+  dns-policy:
+    description: "Controls the policy for DNS requests when `egress-policy` is set to `block`. Options: `allowed-domains-only` (default): Allows DNS requests only for domains specified in `allowed-domains`. `any`: Allows any DNS requests."
+    required: false
+    default: "allowed-domains-only"
+  egress-policy:
+    description: "The egress policy to enforce. Valid values are `audit` and `block`. Default: audit"
+    required: false
+    default: "audit"
+  enable-sudo:
+    description: "Enable this option to allow steps to execute commands with sudo. This is useful for workflows that require elevated privileges to perform certain tasks. Options: `true` (default) or `false`."
+    required: false
+    default: "true"
+  tetragon-address:
+    description: "The address of the Tetragon gRPC server. Default: localhost:54321"
+    required: false
+    default: "localhost:54321"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Drop-Drop Agent
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -e
+
+        # Check if running on Linux
+        if [[ "$RUNNER_OS" != "Linux" ]]; then
+          echo "Drop-Drop Agent only supports Linux runners."
+          exit 1
+        fi
+
+        # Check if running in a container
+        if [[ -f "/.dockerenv" ]]; then
+          echo "Drop-Drop Agent does not support container-based jobs."
+          exit 1
+        fi
+
+        # Get the repository directory where this action is located
+        ACTION_DIR="$GITHUB_ACTION_PATH"
+        if [[ -z "$ACTION_DIR" ]]; then
+          # Fallback to relative path if GITHUB_ACTION_PATH is not set
+          ACTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        fi
+
+        echo "Action directory: $ACTION_DIR"
+        echo "Looking for agent binary..."
+
+        # Check if agent binary exists in the action directory
+        AGENT_PATH="$ACTION_DIR/agent"
+        if [[ ! -f "$AGENT_PATH" ]]; then
+          echo "Agent binary not found at $AGENT_PATH"
+          # Try to find built agent in repository
+          if [[ -f "/home/runner/work/_actions/hanshal101/drop-drop/main/bin/agent" ]]; then
+            AGENT_PATH="/home/runner/work/_actions/hanshal101/drop-drop/main/bin/agent"
+          elif [[ -f "./bin/agent" ]]; then
+            AGENT_PATH="./bin/agent"
+          else
+            echo "Building agent from source..."
+            # Make sure we're in the right directory to build
+            cd "$ACTION_DIR/agent" || cd "/home/runner/work/_actions/hanshal101/drop-drop/main/agent"
+            mkdir -p ../bin
+            go build -o ../bin/agent .
+            AGENT_PATH="../bin/agent"
+          fi
+        fi
+
+        if [[ ! -f "$AGENT_PATH" ]]; then
+          echo "Error: Could not find or build the agent binary"
+          exit 1
+        fi
+
+        echo "Agent binary found at: $AGENT_PATH"
+        chmod +x "$AGENT_PATH"
+
+        # Create temporary directory for logs
+        TEMP_DIR=$(mktemp -d)
+        LOG_FILE="$TEMP_DIR/connection_log.json"
+
+        # Configure allowed IPs
+        ALLOWED_IPS=""
+        if [ -n "${{ inputs.allowed-ips }}" ]; then
+          ALLOWED_IPS="${{ inputs.allowed-ips }}"
+        fi
+
+        # Configure allowed domains
+        ALLOWED_DOMAINS=""
+        if [ -n "${{ inputs.allowed-domains }}" ]; then
+          ALLOWED_DOMAINS="${{ inputs.allowed-domains }}"
+        fi
+
+        # Configure DNS policy
+        DNS_POLICY="${{ inputs.dns-policy }}"
+
+        # Configure egress policy
+        EGRESS_POLICY="${{ inputs.egress-policy }}"
+
+        # Configure Tetragon address
+        TETRAGON_ADDRESS="${{ inputs.tetragon-address }}"
+
+        # Create the agent configuration
+        AGENT_ARGS="--firewall-mode=$EGRESS_POLICY --allowed-ips='$ALLOWED_IPS' --allowed-domains='$ALLOWED_DOMAINS' --dns-policy=$DNS_POLICY --tetragon-address=$TETRAGON_ADDRESS"
+
+        # Print configuration
+        echo "Drop-Drop Agent Configuration:"
+        echo "  Firewall Mode: $EGRESS_POLICY"
+        echo "  Allowed IPs: $ALLOWED_IPS"
+        echo "  Allowed Domains: $ALLOWED_DOMAINS"
+        echo "  DNS Policy: $DNS_POLICY"
+        echo "  Tetragon Address: $TETRAGON_ADDRESS"
+
+        # Ensure necessary kernel modules are available
+        if ! lsmod | grep -q nfnetlink_queue; then
+          echo "Loading nftables module..."
+          sudo modprobe nfnetlink_queue || {
+            echo "Failed to load nfnetlink_queue module"
+            exit 1
+          }
+        fi
+
+        # Set up iptables rules to redirect traffic to nfqueue
+        sudo iptables -I OUTPUT -j NFQUEUE --queue-num 0
+
+        # Start the agent in the background
+        echo "Starting Drop-Drop Agent..."
+        sudo $AGENT_PATH $AGENT_ARGS &
+        AGENT_PID=$!
+        echo "Agent PID: $AGENT_PID"
+
+        # Wait briefly to ensure agent is running
+        sleep 2
+
+        # Check if agent is running
+        if ! ps -p $AGENT_PID > /dev/null 2>&1; then
+          echo "Failed to start Drop-Drop Agent"
+          # Check the logs if possible
+          if [ -f "/tmp/agent_error.log" ]; then
+            echo "Agent error log:"
+            cat "/tmp/agent_error.log"
+          fi
+          exit 1
+        fi
+
+        # Store the PID for cleanup
+        echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
+        echo "AGENT_PATH=$AGENT_PATH" >> $GITHUB_ENV
+        echo "AGENT_LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
+        echo "AGENT_TEMP_DIR=$TEMP_DIR" >> $GITHUB_ENV
+
+        echo "Drop-Drop Agent started successfully"
+
+    - name: Cleanup Drop-Drop Agent
+      if: always()
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -e
+
+        # Kill the agent if it's running
+        if [[ -n "$AGENT_PID" ]] && ps -p $AGENT_PID > /dev/null 2>&1; then
+          echo "Stopping Drop-Drop Agent (PID: $AGENT_PID)..."
+          sudo kill $AGENT_PID
+
+          # Wait for agent to stop
+          for i in {1..10}; do
+            if ! ps -p $AGENT_PID > /dev/null 2>&1; then
+              echo "Agent stopped successfully"
+              break
+            fi
+            sleep 1
+          done
+
+          # Force kill if still running
+          if ps -p $AGENT_PID > /dev/null 2>&1; then
+            echo "Force killing agent..."
+            sudo kill -9 $AGENT_PID
+          fi
+        fi
+
+        # Remove iptables rules
+        sudo iptables -D OUTPUT -j NFQUEUE --queue-num 0 2>/dev/null || true
+
+        # Try to find and kill any remaining agent processes
+        sudo pkill -f "agent.*firewall-mode" 2>/dev/null || true
+
+        # Report blocked connections if in audit mode
+        if [[ -n "$AGENT_LOG_FILE" ]] && [[ -f "$AGENT_LOG_FILE" ]]; then
+          echo "Connection logs:"
+          cat "$AGENT_LOG_FILE" || echo "No connection logs found"
+        fi
+
+        # Clean up temporary directory
+        if [[ -n "$AGENT_TEMP_DIR" ]] && [[ -d "$AGENT_TEMP_DIR" ]]; then
+          rm -rf "$AGENT_TEMP_DIR"
+        fi
+
+        echo "Drop-Drop Agent cleaned up"

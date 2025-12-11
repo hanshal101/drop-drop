@@ -2,29 +2,34 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 )
 
-// FirewallMode represents the different modes of operation for the firewall.
 type FirewallMode string
 
 const (
-	FirewallModeAudit FirewallMode = "audit"
-	FirewallModeBlock FirewallMode = "block"
+	FirewallModeAudit        FirewallMode = "audit"
+	FirewallModeBlock        FirewallMode = "block"
 	FirewallModeBlockWithDNS FirewallMode = "block-with-dns"
 )
 
-// ApplyFirewallRules applies the firewall rules for the given mode.
+var (
+	IPAllowedList     []net.IP
+	DomainAllowedList []string
+	DNSSetting        string
+)
+
 func ApplyFirewallRules(mode FirewallMode) error {
 	var ruleset string
 	switch mode {
 	case FirewallModeAudit:
-		ruleset = auditRules
+		ruleset = createAuditRules()
 	case FirewallModeBlock:
-		ruleset = blockRules
+		ruleset = createBlockRules()
 	case FirewallModeBlockWithDNS:
-		ruleset = blockWithDNSRules
+		ruleset = createBlockWithDNSRules()
 	default:
 		return fmt.Errorf("unknown firewall mode: %s", mode)
 	}
@@ -37,7 +42,6 @@ func ApplyFirewallRules(mode FirewallMode) error {
 	return nil
 }
 
-// ClearFirewallRules clears all firewall rules.
 func ClearFirewallRules() error {
 	cmd := exec.Command("nft", "flush", "ruleset")
 	if err := cmd.Run(); err != nil {
@@ -46,29 +50,48 @@ func ClearFirewallRules() error {
 	return nil
 }
 
-const auditRules = `
-table inet roc_drop {
+func createAuditRules() string {
+	baseRules := `table inet roc_drop {
 	chain output {
 		type filter hook output priority 0; policy accept;
 		queue num 0
 	}
+}`
+	return baseRules
 }
-`
 
-const blockRules = `
-table inet roc_drop {
+func createBlockRules() string {
+	var allowedIPRules string
+	for _, ip := range IPAllowedList {
+		ipStr := ip.String()
+		allowedIPRules += fmt.Sprintf("\tip daddr %s accept\n", ipStr)
+		allowedIPRules += fmt.Sprintf("\tip saddr %s accept\n", ipStr)
+	}
+
+	baseRules := fmt.Sprintf(`table inet roc_drop {
 	chain output {
 		type filter hook output priority 0; policy drop;
+		%s
 	}
+}`, allowedIPRules)
+	return baseRules
 }
-`
 
-const blockWithDNSRules = `
-table inet roc_drop {
+func createBlockWithDNSRules() string {
+	var allowedIPRules string
+	for _, ip := range IPAllowedList {
+		ipStr := ip.String()
+		allowedIPRules += fmt.Sprintf("\tip daddr %s accept\n", ipStr)
+		allowedIPRules += fmt.Sprintf("\tip saddr %s accept\n", ipStr)
+	}
+
+	baseRules := fmt.Sprintf(`table inet roc_drop {
 	chain output {
 		type filter hook output priority 0; policy drop;
 		udp dport 53 accept
 		tcp dport 53 accept
+		%s
 	}
+}`, allowedIPRules)
+	return baseRules
 }
-`

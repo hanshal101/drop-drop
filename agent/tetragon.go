@@ -11,13 +11,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// TetragonClient is a client for the Tetragon gRPC API.
 type TetragonClient struct {
 	conn   *grpc.ClientConn
 	client tetragon.FineGuidanceSensorsClient
 }
 
-// NewTetragonClient creates a new TetragonClient.
 func NewTetragonClient(address string) (*TetragonClient, error) {
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -32,12 +30,10 @@ func NewTetragonClient(address string) (*TetragonClient, error) {
 	}, nil
 }
 
-// Close closes the connection to the Tetragon gRPC server.
 func (c *TetragonClient) Close() {
 	c.conn.Close()
 }
 
-// GetEvents streams events from the Tetragon gRPC server.
 func (c *TetragonClient) GetEvents(ctx context.Context, events chan<- *tetragon.GetEventsResponse) {
 	req := &tetragon.GetEventsRequest{}
 

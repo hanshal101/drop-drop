@@ -1,27 +1,41 @@
 name: "drop-drop"
-description: "A clean-room reimplementation of Bullfrog"
-author: "Gemini"
+description: "A network security tool to control outbound traffic from GitHub Actions"
+author: "Hanshal"
 
 inputs:
   firewall-mode:
-    description: "The firewall mode to apply. One of: audit, block, block-with-dns"
-    required: true
+    description: "The egress policy to enforce. Valid values are audit and block. Default: audit"
+    required: false
     default: "audit"
+  allowed-ips:
+    description: "List of IPs to allow outbound connections to. By default, only localhost and IPs required for the essential operations of Github Actions are allowed."
+    required: false
+  allowed-domains:
+    description: "List of domains to allow outbound connections to. Wildcards are accepted. For example, if allowing `*.google.com`, this will allow `www.google.com`, `console.cloud.google.com` but not `google.com`. By default, only domains required for essential operations of Github Actions and uploading job summaries are allowed."
+    required: false
+  dns-policy:
+    description: "Controls the policy for DNS requests when `egress-policy` is set to `block`. - `allowed-domains-only` (default): Allows DNS requests only for domains specified in `allowed-domains`. - `any`: Allows any DNS requests."
+    required: false
+    default: "allowed-domains-only"
   tetragon-address:
     description: "The address of the Tetragon gRPC server."
-    required: true
+    required: false
     default: "localhost:54321"
   agent-url:
-    description: "The URL to download the drop-drop agent from."
-    required: true
+    description: "The URL to download the drop-drop agent from. This is required if not using the prebuilt agent."
+    required: false
   install-tetragon:
     description: "Whether to install Tetragon."
-    required: true
+    required: false
     default: "false"
   nfqueue-num:
     description: "The nfqueue number to listen on."
-    required: true
+    required: false
     default: "0"
+  enable-sudo:
+    description: "Enable this option to allow steps to execute commands with sudo. This is useful for workflows that require elevated privileges to perform certain tasks. Options: `true` (default) or `false`."
+    required: false
+    default: "true"
 
 runs:
   using: "node16"

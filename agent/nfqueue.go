@@ -9,12 +9,10 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// NFQueue is a client for the nfqueue subsystem.
 type NFQueue struct {
 	nf *nfqueue.Nfqueue
 }
 
-// NewNFQueue creates a new NFQueue.
 func NewNFQueue(queueNum uint16) (*NFQueue, error) {
 	config := nfqueue.Config{
 		NfQueue:      queueNum,
@@ -32,12 +30,19 @@ func NewNFQueue(queueNum uint16) (*NFQueue, error) {
 	}, nil
 }
 
-// Register registers a callback function to process packets.
-func (q *NFQueue) Register(ctx context.Context, cb func(gopacket.Packet)) error {
+type CallbackData struct {
+	Packet   gopacket.Packet
+	PacketID uint32
+}
+
+func (q *NFQueue) Register(ctx context.Context, cb func(CallbackData)) error {
 	hook := func(a nfqueue.Attribute) int {
 		p := gopacket.NewPacket(*a.Payload, layers.LayerTypeIPv4, gopacket.Default)
-		cb(p)
-		q.nf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
+		data := CallbackData{
+			Packet:   p,
+			PacketID: *a.PacketID,
+		}
+		cb(data)
 		return 0
 	}
 
@@ -49,7 +54,10 @@ func (q *NFQueue) Register(ctx context.Context, cb func(gopacket.Packet)) error 
 	return q.nf.RegisterWithErrorFunc(ctx, hook, errorFunc)
 }
 
-// Close closes the nfqueue.
+func (q *NFQueue) SetVerdict(packetID uint32, verdict uint32) error {
+	return q.nf.SetVerdict(packetID, int(verdict))
+}
+
 func (q *NFQueue) Close() {
 	q.nf.Close()
 }
