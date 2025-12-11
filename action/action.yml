@@ -1,0 +1,29 @@
+name: "drop-drop"
+description: "A clean-room reimplementation of Bullfrog"
+author: "Gemini"
+
+inputs:
+  firewall-mode:
+    description: "The firewall mode to apply. One of: audit, block, block-with-dns"
+    required: true
+    default: "audit"
+  tetragon-address:
+    description: "The address of the Tetragon gRPC server."
+    required: true
+    default: "localhost:54321"
+  agent-url:
+    description: "The URL to download the drop-drop agent from."
+    required: true
+  install-tetragon:
+    description: "Whether to install Tetragon."
+    required: true
+    default: "false"
+  nfqueue-num:
+    description: "The nfqueue number to listen on."
+    required: true
+    default: "0"
+
+runs:
+  using: "node16"
+  main: "dist/main.js"
+  post: "dist/post.js"

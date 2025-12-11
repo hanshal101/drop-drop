@@ -1,0 +1,20 @@
+# Node
+node_modules
+dist
+npm-debug.log
+*.log
+.npm
+
+# Go
+*.o
+*.a
+*.so
+_obj
+_test
+bin
+*.exe
+*.test
+
+# OS
+.DS_Store
+Thumbs.db
