@@ -22,7 +22,7 @@ To use `drop-drop` in your GitHub Actions workflow, add the following step:
 
 ```yaml
 - name: Run drop-drop
-  uses: your-username/drop-drop@v1
+  uses: hanshal101/drop-drop@latest
   with:
     firewall-mode: 'audit'
     agent-url: 'https://your-url/to/the/agent'
