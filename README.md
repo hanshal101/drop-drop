@@ -4,6 +4,8 @@ Increase the security of your Github Actions workflows using Drop-Drop! With Dro
 
 Not sure what IPs or domains? Simply use the default `egress-policy: audit` mode to get a list of all outbound network connections, without impacting your existing workflows.
 
+Built with a production-ready Docker container approach for faster, more reliable execution.
+
 ## Usage
 
 <!-- start usage -->

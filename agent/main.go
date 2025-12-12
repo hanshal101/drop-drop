@@ -36,20 +36,17 @@ type ConnectionLogger struct {
 	entries []ConnectionLogEntry
 }
 
-// DNSCache stores mappings between IPs and domains
 type DNSCache struct {
 	mu    sync.RWMutex
-	cache map[string]string // ip -> domain
+	cache map[string]string
 }
 
-// Add adds an IP-domain mapping to the cache
 func (d *DNSCache) Add(ip, domain string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cache[ip] = domain
 }
 
-// Get returns the domain for an IP if it exists
 func (d *DNSCache) Get(ip string) (string, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -160,9 +157,7 @@ func main() {
 			srcPort = uint16(udp.SrcPort)
 		}
 
-		// Check if this is DNS traffic
 		if isDNSTraffic(packet) {
-			// Check if this is a DNS response (incoming traffic to port 53)
 			var isResponse bool
 			if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
 				udp, _ := udpLayer.(*layers.UDP)
@@ -173,7 +168,6 @@ func main() {
 			}
 
 			if isResponse {
-				// This is a DNS response, parse it and update the DNS cache
 				domain, ipAddrs, dnsIsResponse := parseDNSResponse(packet)
 				if dnsIsResponse && len(ipAddrs) > 0 {
 					for _, ip := range ipAddrs {
@@ -183,10 +177,7 @@ func main() {
 				}
 			}
 
-			// Handle DNS requests based on DNS policy
 			if DNSSetting == "allowed-domains-only" {
-				// For now, allow all DNS traffic but the cache will be used for
-				// blocking connections to non-allowed domains
 				fmt.Printf("DNS TRAFFIC: Allowing DNS request to %s\n", dstIP)
 				nfq.SetVerdict(packetID, 1)
 				return
@@ -462,7 +453,6 @@ func isConnectionAllowed(dstIP net.IP, process *tetragon.Process, allowedIPs []n
 		return true
 	}
 
-	// Check if the IP corresponds to an allowed domain using DNS cache
 	ipStr := dstIP.String()
 	if domain, ok := dnsCache.Get(ipStr); ok {
 		if matchesDomain(domain, allowedDomains) {
@@ -485,18 +475,15 @@ func isDNSTraffic(packet gopacket.Packet) bool {
 	return false
 }
 
-// parseDNSResponse extracts domain names and IP addresses from DNS response packets
 func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, isResponse bool) {
 	var dnsPayload []byte
 
-	// Extract DNS payload from the packet
 	if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
 		udp, _ := udpLayer.(*layers.UDP)
 		dnsPayload = udp.Payload
 	} else if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 		tcp, _ := tcpLayer.(*layers.TCP)
 		dnsPayload = tcp.Payload
-		// TCP DNS has 2-byte length prefix, skip it
 		if len(dnsPayload) >= 2 {
 			dnsPayload = dnsPayload[2:]
 		}
@@ -508,7 +495,6 @@ func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, 
 		return "", nil, false
 	}
 
-	// Check if this is a DNS response (QR bit set)
 	flags := binary.BigEndian.Uint16(dnsPayload[2:4])
 	isResponse = (flags & 0x8000) != 0
 
@@ -516,47 +502,37 @@ func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, 
 		return "", nil, false
 	}
 
-	// Extract query name
 	queryName := parseDomainName(dnsPayload, 12, len(dnsPayload))
 	if queryName == "" {
 		return "", nil, false
 	}
 
-	// Find answers section (skip header and question)
 	queryEnd := 12
-	// Skip query name
 	for queryEnd < len(dnsPayload) {
 		if dnsPayload[queryEnd] == 0 {
 			queryEnd++
 			break
 		} else if dnsPayload[queryEnd]&0xC0 == 0xC0 {
-			// Compressed label
 			queryEnd += 2
 			break
 		} else {
-			// Regular label - skip length + label content
 			queryEnd += 1 + int(dnsPayload[queryEnd])
 		}
 	}
 
-	// Skip QTYPE (2 bytes) and QCLASS (2 bytes)
 	queryEnd += 4
 
-	// Process resource records in the answer section
 	var ipAddresses []net.IP
 	ancount := binary.BigEndian.Uint16(dnsPayload[6:8])
 	current := queryEnd
 
 	for i := 0; i < int(ancount) && current < len(dnsPayload); i++ {
-		// Skip record name (same as query name or compressed pointer)
 		if current >= len(dnsPayload) {
 			break
 		}
 		if dnsPayload[current]&0xC0 == 0xC0 {
-			// Compressed name (2 bytes)
 			current += 2
 		} else {
-			// Uncompressed name - parse until we hit a null terminator
 			for current < len(dnsPayload) && dnsPayload[current] != 0 {
 				if dnsPayload[current]&0xC0 == 0xC0 {
 					current += 2
@@ -574,11 +550,9 @@ func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, 
 			break
 		}
 
-		// Extract record type (2 bytes)
 		recordType := binary.BigEndian.Uint16(dnsPayload[current : current+2])
-		current += 8 // Skip type (2), class (2), TTL (4)
+		current += 8
 
-		// Get data length (2 bytes)
 		dataLen := binary.BigEndian.Uint16(dnsPayload[current : current+2])
 		current += 2
 
@@ -586,11 +560,10 @@ func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, 
 			break
 		}
 
-		// Handle A records (type 1) - IPv4 addresses
 		if recordType == 1 && dataLen == 4 {
 			ip := net.IP(dnsPayload[current : current+4])
 			ipAddresses = append(ipAddresses, ip)
-		} else if recordType == 28 { // AAAA records (IPv6, type 28)
+		} else if recordType == 28 {
 			if dataLen == 16 {
 				ip := net.IP(dnsPayload[current : current+16])
 				ipAddresses = append(ipAddresses, ip)
@@ -603,7 +576,6 @@ func parseDNSResponse(packet gopacket.Packet) (domain string, ipAddrs []net.IP, 
 	return queryName, ipAddresses, true
 }
 
-// parseDomainName parses a DNS domain name from raw bytes
 func parseDomainName(data []byte, offset, maxOffset int) string {
 	if offset >= len(data) {
 		return ""
@@ -619,20 +591,16 @@ func parseDomainName(data []byte, offset, maxOffset int) string {
 
 		labelLen := int(data[current])
 		if labelLen == 0 {
-			// End of name
 			break
 		} else if labelLen&0xC0 == 0xC0 {
-			// Compressed pointer - not handling this in simple parser
 			break
 		} else if current+1+labelLen > len(data) {
-			// Would read past end of data
 			break
 		}
 
 		labels = append(labels, string(data[current+1:current+1+labelLen]))
 		current += 1 + labelLen
 
-		// Prevent infinite loops
 		if current > maxOffset {
 			break
 		}

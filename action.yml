@@ -30,11 +30,15 @@ inputs:
     description: "The address of the Tetragon gRPC server. Default: localhost:54321"
     required: false
     default: "localhost:54321"
+  docker-image:
+    description: "The Docker image to use for the Drop-Drop agent. Default: hanshal785/drop-drop-agent:latest"
+    required: false
+    default: "hanshal785/drop-drop-agent:latest"
 
 runs:
   using: "composite"
   steps:
-    - name: Setup Drop-Drop Agent
+    - name: Setup Drop-Drop Agent (Docker)
       shell: bash
       run: |
         #!/bin/bash
@@ -52,68 +56,14 @@ runs:
           exit 1
         fi
 
-        # Get the repository directory where this action is located
-        ACTION_DIR="$GITHUB_ACTION_PATH"
-        if [[ -z "$ACTION_DIR" ]]; then
-          # Fallback to relative path if GITHUB_ACTION_PATH is not set
-          ACTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-        fi
+        # Get Docker image from inputs
+        DOCKER_IMAGE="${{ inputs.docker-image }}"
 
-        echo "Action directory: $ACTION_DIR"
-        echo "Looking for agent binary..."
+        # Pull the latest Docker image
+        echo "Pulling Docker image: $DOCKER_IMAGE"
+        docker pull $DOCKER_IMAGE
 
-        # Check if agent binary exists in the action directory
-        AGENT_PATH="$ACTION_DIR/agent"
-        if [[ ! -f "$AGENT_PATH" ]]; then
-          echo "Agent binary not found at $AGENT_PATH"
-          # Try to find built agent in bin directory first
-          AGENT_BIN_PATH="$ACTION_DIR/bin/agent"
-          if [[ -f "$AGENT_BIN_PATH" ]]; then
-            AGENT_PATH="$AGENT_BIN_PATH"
-          elif [[ -f "./bin/agent" ]]; then
-            AGENT_PATH="$(realpath ./bin/agent)"
-          else
-            echo "Building agent from source..."
-            # Save current directory
-            ORIGINAL_DIR=$(pwd)
-            # Make sure we're in the right directory to build
-            cd "$ACTION_DIR/agent" || {
-              echo "Error: Cannot change to agent directory $ACTION_DIR/agent"
-              exit 1
-            }
-            mkdir -p ../bin
-            echo "Building agent binary..."
-            go build -o ../bin/agent . || {
-              echo "Error: Failed to build agent binary"
-              exit 1
-            }
-            echo "Agent built successfully"
-
-            # Calculate the correct path after building
-            AGENT_PATH="$ACTION_DIR/bin/agent"
-
-            # Return to original directory
-            cd "$ORIGINAL_DIR"
-          fi
-        fi
-
-        if [[ ! -f "$AGENT_PATH" ]]; then
-          echo "Error: Could not find or build the agent binary at $AGENT_PATH"
-          exit 1
-        fi
-
-        # Ensure we have an absolute path for the agent
-        if command -v realpath >/dev/null 2>&1; then
-          AGENT_PATH=$(realpath "$AGENT_PATH")
-        else
-          # fallback if realpath is not available
-          AGENT_PATH=$(cd "$(dirname "$AGENT_PATH")" && pwd)/$(basename "$AGENT_PATH")
-        fi
-
-        echo "Agent binary found at: $AGENT_PATH"
-        chmod +x "$AGENT_PATH"
-
-        # Create temporary directory for logs
+        # Create temporary directory for logs and configuration
         TEMP_DIR=$(mktemp -d)
         LOG_FILE="$TEMP_DIR/connection_log.json"
 
@@ -138,9 +88,6 @@ runs:
         # Configure Tetragon address
         TETRAGON_ADDRESS="${{ inputs.tetragon-address }}"
 
-        # Create the agent configuration
-        AGENT_ARGS="--firewall-mode=$EGRESS_POLICY --allowed-ips='$ALLOWED_IPS' --allowed-domains='$ALLOWED_DOMAINS' --dns-policy=$DNS_POLICY --tetragon-address=$TETRAGON_ADDRESS"
-
         # Print configuration
         echo "Drop-Drop Agent Configuration:"
         echo "  Firewall Mode: $EGRESS_POLICY"
@@ -148,10 +95,11 @@ runs:
         echo "  Allowed Domains: $ALLOWED_DOMAINS"
         echo "  DNS Policy: $DNS_POLICY"
         echo "  Tetragon Address: $TETRAGON_ADDRESS"
+        echo "  Docker Image: $DOCKER_IMAGE"
 
         # Ensure necessary kernel modules are available
         if ! lsmod | grep -q nfnetlink_queue; then
-          echo "Loading nftables module..."
+          echo "Loading nfnetlink_queue module..."
           sudo modprobe nfnetlink_queue || {
             echo "Failed to load nfnetlink_queue module"
             exit 1
@@ -161,49 +109,51 @@ runs:
         # Set up iptables rules to redirect traffic to nfqueue
         sudo iptables -I OUTPUT -j NFQUEUE --queue-num 0
 
-        # Start the agent in the background
-        echo "Starting Drop-Drop Agent..."
-        # Redirect output to temp file to capture any startup errors
-        AGENT_OUTPUT_FILE=$(mktemp)
-        sudo $AGENT_PATH $AGENT_ARGS >"$AGENT_OUTPUT_FILE" 2>&1 &
-        AGENT_PID=$!
-        echo "Agent PID: $AGENT_PID"
+        # Start the Docker container with the agent
+        echo "Starting Drop-Drop Agent container..."
 
-        # Wait briefly to ensure agent is running and check for startup errors
-        sleep 5
+        # Run the container with necessary privileges and network access
+        CONTAINER_ID=$(docker run -d \
+          --name drop-drop-agent \
+          --cap-add=NET_ADMIN \
+          --cap-add=NET_RAW \
+          --cap-add=SYS_ADMIN \
+          --sysctl net.core.bpf_jit_harden=0 \
+          --network=host \
+          --pid=host \
+          -e FIREWALL_MODE="$EGRESS_POLICY" \
+          -e ALLOWED_IPS="$ALLOWED_IPS" \
+          -e ALLOWED_DOMAINS="$ALLOWED_DOMAINS" \
+          -e DNS_POLICY="$DNS_POLICY" \
+          -e TETRAGON_ADDRESS="$TETRAGON_ADDRESS" \
+          --entrypoint="/app/agent" \
+          $DOCKER_IMAGE \
+          --firewall-mode="$EGRESS_POLICY" \
+          --allowed-ips="$ALLOWED_IPS" \
+          --allowed-domains="$ALLOWED_DOMAINS" \
+          --dns-policy="$DNS_POLICY" \
+          --tetragon-address="$TETRAGON_ADDRESS" \
+          --nfqueue-num=0)
 
-        # Check if agent is running
-        if ! ps -p $AGENT_PID > /dev/null 2>&1; then
-          echo "Failed to start Drop-Drop Agent or agent exited early"
-          # Show any output from the agent
-          if [ -f "$AGENT_OUTPUT_FILE" ] && [ -s "$AGENT_OUTPUT_FILE" ]; then
-            echo "Agent output/error:"
-            cat "$AGENT_OUTPUT_FILE"
-          fi
+        echo "Container ID: $CONTAINER_ID"
+
+        # Wait briefly to ensure container is running
+        sleep 3
+
+        # Check if container is running
+        if ! docker ps -q -f id=$CONTAINER_ID | grep -q $CONTAINER_ID; then
+          echo "Failed to start Drop-Drop Agent container"
+          # Show container logs if possible
+          docker logs $CONTAINER_ID 2>&1 || echo "Could not retrieve container logs"
           exit 1
         fi
 
-        # Brief additional wait to allow agent to initialize
-        sleep 2
-
-        # Double-check agent is still running after initialization
-        if ! ps -p $AGENT_PID > /dev/null 2>&1; then
-          echo "Drop-Drop Agent died during initialization"
-          if [ -f "$AGENT_OUTPUT_FILE" ] && [ -s "$AGENT_OUTPUT_FILE" ]; then
-            echo "Agent output/error:"
-            cat "$AGENT_OUTPUT_FILE"
-          fi
-          exit 1
-        fi
-
-        # Store the PID and other variables for cleanup
-        echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
-        echo "AGENT_PATH=$AGENT_PATH" >> $GITHUB_ENV
+        # Store the container ID for cleanup
+        echo "AGENT_CONTAINER_ID=$CONTAINER_ID" >> $GITHUB_ENV
         echo "AGENT_LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
         echo "AGENT_TEMP_DIR=$TEMP_DIR" >> $GITHUB_ENV
-        echo "AGENT_OUTPUT_FILE=$AGENT_OUTPUT_FILE" >> $GITHUB_ENV
 
-        echo "Drop-Drop Agent started successfully"
+        echo "Drop-Drop Agent container started successfully"
 
     - name: Cleanup Drop-Drop Agent
       if: always()
@@ -212,42 +162,37 @@ runs:
         #!/bin/bash
         set -e
 
-        # Kill the agent if it's running
-        if [[ -n "$AGENT_PID" ]] && ps -p $AGENT_PID > /dev/null 2>&1; then
-          echo "Stopping Drop-Drop Agent (PID: $AGENT_PID)..."
-          sudo kill $AGENT_PID
+        # Stop and remove the agent container if it's running
+        if [[ -n "$AGENT_CONTAINER_ID" ]]; then
+          echo "Stopping Drop-Drop Agent container (ID: $AGENT_CONTAINER_ID)..."
 
-          # Wait for agent to stop
-          for i in {1..10}; do
-            if ! ps -p $AGENT_PID > /dev/null 2>&1; then
-              echo "Agent stopped successfully"
-              break
-            fi
-            sleep 1
-          done
+          # Check if container exists
+          if docker ps -a --format "table {{.ID}}" | grep -q $AGENT_CONTAINER_ID; then
+            # Stop the container with a timeout
+            docker stop -t 10 $AGENT_CONTAINER_ID 2>/dev/null || {
+              # Force kill if stop fails
+              echo "Force stopping container..."
+              docker kill $AGENT_CONTAINER_ID 2>/dev/null || true
+            }
 
-          # Force kill if still running
-          if ps -p $AGENT_PID > /dev/null 2>&1; then
-            echo "Force killing agent..."
-            sudo kill -9 $AGENT_PID
+            # Remove the container
+            docker rm -v $AGENT_CONTAINER_ID 2>/dev/null || true
+            echo "Agent container stopped and removed"
+          else
+            echo "Agent container not found or already removed"
           fi
         fi
 
         # Remove iptables rules
         sudo iptables -D OUTPUT -j NFQUEUE --queue-num 0 2>/dev/null || true
 
-        # Try to find and kill any remaining agent processes
-        sudo pkill -f "agent.*firewall-mode" 2>/dev/null || true
+        # Clean up Docker images if needed (optional cleanup)
+        docker image prune -f 2>/dev/null || true
 
         # Report blocked connections if in audit mode
         if [[ -n "$AGENT_LOG_FILE" ]] && [[ -f "$AGENT_LOG_FILE" ]]; then
           echo "Connection logs:"
           cat "$AGENT_LOG_FILE" || echo "No connection logs found"
-        fi
-
-        # Clean up temporary files
-        if [[ -n "$AGENT_OUTPUT_FILE" ]] && [[ -f "$AGENT_OUTPUT_FILE" ]]; then
-          rm -f "$AGENT_OUTPUT_FILE"
         fi
 
         # Clean up temporary directory
