@@ -66,18 +66,21 @@ runs:
         AGENT_PATH="$ACTION_DIR/agent"
         if [[ ! -f "$AGENT_PATH" ]]; then
           echo "Agent binary not found at $AGENT_PATH"
-          # Try to find built agent in repository
-          if [[ -f "/home/runner/work/_actions/hanshal101/drop-drop/main/bin/agent" ]]; then
-            AGENT_PATH="/home/runner/work/_actions/hanshal101/drop-drop/main/bin/agent"
+          # Try to find built agent in bin directory first
+          AGENT_BIN_PATH="$ACTION_DIR/bin/agent"
+          if [[ -f "$AGENT_BIN_PATH" ]]; then
+            AGENT_PATH="$AGENT_BIN_PATH"
           elif [[ -f "./bin/agent" ]]; then
-            AGENT_PATH="./bin/agent"
+            AGENT_PATH="$(realpath ./bin/agent)"
           else
             echo "Building agent from source..."
             # Make sure we're in the right directory to build
-            cd "$ACTION_DIR/agent" || cd "/home/runner/work/_actions/hanshal101/drop-drop/main/agent"
+            cd "$ACTION_DIR/agent"
             mkdir -p ../bin
             go build -o ../bin/agent .
-            AGENT_PATH="../bin/agent"
+
+            # Calculate the correct path after building
+            AGENT_PATH="$ACTION_DIR/bin/agent"
           fi
         fi
 
@@ -86,6 +89,8 @@ runs:
           exit 1
         fi
 
+        # Ensure we have an absolute path for the agent
+        AGENT_PATH=$(realpath "$AGENT_PATH")
         echo "Agent binary found at: $AGENT_PATH"
         chmod +x "$AGENT_PATH"
 
