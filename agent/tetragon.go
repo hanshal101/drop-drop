@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 
 	"github.com/cilium/tetragon/api/v1/tetragon"
 	"google.golang.org/grpc"
@@ -17,7 +18,10 @@ type TetragonClient struct {
 }
 
 func NewTetragonClient(address string) (*TetragonClient, error) {
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to tetragon: %w", err)
 	}

@@ -74,23 +74,42 @@ runs:
             AGENT_PATH="$(realpath ./bin/agent)"
           else
             echo "Building agent from source..."
+            # Save current directory
+            ORIGINAL_DIR=$(pwd)
             # Make sure we're in the right directory to build
-            cd "$ACTION_DIR/agent"
+            cd "$ACTION_DIR/agent" || {
+              echo "Error: Cannot change to agent directory $ACTION_DIR/agent"
+              exit 1
+            }
             mkdir -p ../bin
-            go build -o ../bin/agent .
+            echo "Building agent binary..."
+            go build -o ../bin/agent . || {
+              echo "Error: Failed to build agent binary"
+              exit 1
+            }
+            echo "Agent built successfully"
 
             # Calculate the correct path after building
             AGENT_PATH="$ACTION_DIR/bin/agent"
+
+            # Return to original directory
+            cd "$ORIGINAL_DIR"
           fi
         fi
 
         if [[ ! -f "$AGENT_PATH" ]]; then
-          echo "Error: Could not find or build the agent binary"
+          echo "Error: Could not find or build the agent binary at $AGENT_PATH"
           exit 1
         fi
 
         # Ensure we have an absolute path for the agent
-        AGENT_PATH=$(realpath "$AGENT_PATH")
+        if command -v realpath >/dev/null 2>&1; then
+          AGENT_PATH=$(realpath "$AGENT_PATH")
+        else
+          # fallback if realpath is not available
+          AGENT_PATH=$(cd "$(dirname "$AGENT_PATH")" && pwd)/$(basename "$AGENT_PATH")
+        fi
+
         echo "Agent binary found at: $AGENT_PATH"
         chmod +x "$AGENT_PATH"
 
@@ -144,29 +163,45 @@ runs:
 
         # Start the agent in the background
         echo "Starting Drop-Drop Agent..."
-        sudo $AGENT_PATH $AGENT_ARGS &
+        # Redirect output to temp file to capture any startup errors
+        AGENT_OUTPUT_FILE=$(mktemp)
+        sudo $AGENT_PATH $AGENT_ARGS >"$AGENT_OUTPUT_FILE" 2>&1 &
         AGENT_PID=$!
         echo "Agent PID: $AGENT_PID"
 
-        # Wait briefly to ensure agent is running
-        sleep 2
+        # Wait briefly to ensure agent is running and check for startup errors
+        sleep 5
 
         # Check if agent is running
         if ! ps -p $AGENT_PID > /dev/null 2>&1; then
-          echo "Failed to start Drop-Drop Agent"
-          # Check the logs if possible
-          if [ -f "/tmp/agent_error.log" ]; then
-            echo "Agent error log:"
-            cat "/tmp/agent_error.log"
+          echo "Failed to start Drop-Drop Agent or agent exited early"
+          # Show any output from the agent
+          if [ -f "$AGENT_OUTPUT_FILE" ] && [ -s "$AGENT_OUTPUT_FILE" ]; then
+            echo "Agent output/error:"
+            cat "$AGENT_OUTPUT_FILE"
           fi
           exit 1
         fi
 
-        # Store the PID for cleanup
+        # Brief additional wait to allow agent to initialize
+        sleep 2
+
+        # Double-check agent is still running after initialization
+        if ! ps -p $AGENT_PID > /dev/null 2>&1; then
+          echo "Drop-Drop Agent died during initialization"
+          if [ -f "$AGENT_OUTPUT_FILE" ] && [ -s "$AGENT_OUTPUT_FILE" ]; then
+            echo "Agent output/error:"
+            cat "$AGENT_OUTPUT_FILE"
+          fi
+          exit 1
+        fi
+
+        # Store the PID and other variables for cleanup
         echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
         echo "AGENT_PATH=$AGENT_PATH" >> $GITHUB_ENV
         echo "AGENT_LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
         echo "AGENT_TEMP_DIR=$TEMP_DIR" >> $GITHUB_ENV
+        echo "AGENT_OUTPUT_FILE=$AGENT_OUTPUT_FILE" >> $GITHUB_ENV
 
         echo "Drop-Drop Agent started successfully"
 
@@ -208,6 +243,11 @@ runs:
         if [[ -n "$AGENT_LOG_FILE" ]] && [[ -f "$AGENT_LOG_FILE" ]]; then
           echo "Connection logs:"
           cat "$AGENT_LOG_FILE" || echo "No connection logs found"
+        fi
+
+        # Clean up temporary files
+        if [[ -n "$AGENT_OUTPUT_FILE" ]] && [[ -f "$AGENT_OUTPUT_FILE" ]]; then
+          rm -f "$AGENT_OUTPUT_FILE"
         fi
 
         # Clean up temporary directory

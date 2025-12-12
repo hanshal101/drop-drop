@@ -106,7 +106,9 @@ func main() {
 		fmt.Printf("Connecting to Tetragon at %s\n", *tetragonAddress)
 		tgClient, err := NewTetragonClient(*tetragonAddress)
 		if err != nil {
-			log.Fatalf("Failed to create Tetragon client: %v", err)
+			log.Printf("Warning: Failed to connect to Tetragon: %v. Agent will operate without process monitoring.", err)
+			<-ctx.Done()
+			return
 		}
 		defer tgClient.Close()
 
